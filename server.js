@@ -21,7 +21,7 @@ const isRelevant = (t) =>
 const decode = (s) =>
   s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+    .replace(/&#39;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(n)).replace(/&amp;/g, '&');
 
 const tag = (xml, name) => {
   const m = xml.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`));
@@ -47,15 +47,37 @@ async function fetchQuery(q) {
   });
 }
 
+async function fetchBing(q) {
+  const url = `https://www.bing.com/news/search?q=${encodeURIComponent(q)}&format=rss&setmkt=ko-KR&count=50`;
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  if (!res.ok) throw new Error(`${res.status} bing ${q}`);
+  const xml = await res.text();
+  return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map((m) => {
+    const it = m[1];
+    const raw = tag(it, 'link');
+    const real = new URL(raw).searchParams.get('url'); // 원문 주소가 그대로 들어 있음
+    return {
+      title: tag(it, 'title'),
+      link: real || raw,
+      direct: !!real,
+      source: tag(it, 'News:Source').replace(/ on MSN$/, '') || '출처 미상',
+      pubDate: new Date(tag(it, 'pubDate')).toISOString(),
+      snippet: tag(it, 'description'),
+      image: tag(it, 'News:Image').replace(/^http:/, 'https:'),
+    };
+  });
+}
+
 let articles = []; // 최신순
 let lastUpdated = null;
 const seen = new Set();
+const known = new Map(); // link → article (미리보기 요청 검증용)
 const clients = new Set();
 
 const keyOf = (a) => a.title.replace(/[\s\W]+/g, '').slice(0, 40);
 
 async function poll() {
-  const results = await Promise.allSettled(QUERIES.map(fetchQuery));
+  const results = await Promise.allSettled([...[...QUERIES, '현대차 새만금 데이터센터', '새만금 AI 데이터센터 착공', '새만금 현대차 8.9조'].map(fetchBing), ...QUERIES.map(fetchQuery)]);
   const fresh = [];
   for (const r of results) {
     if (r.status !== 'fulfilled') { console.warn('수집 실패:', r.reason.message); continue; }
@@ -63,6 +85,7 @@ async function poll() {
       const k = keyOf(a);
       if (!isRelevant(a.title) || seen.has(k)) continue;
       seen.add(k);
+      known.set(a.link, a);
       fresh.push(a);
     }
   }
@@ -133,9 +156,13 @@ function extract(html) {
 
 async function getArticle(link) {
   if (articleCache.has(link)) return articleCache.get(link);
-  const url = await resolveUrl(link);
-  let out = { url, text: '', image: '' };
-  try { out = { url, ...extract(await fetchHtml(url)) }; } catch (e) { console.warn('본문 실패:', url, e.message); }
+  const art = known.get(link) || {};
+  const url = art.direct ? link : await resolveUrl(link);
+  let out = { url, text: art.snippet || '', image: art.image || '' };
+  try {
+    const ex = extract(await fetchHtml(url));
+    out = { url, text: ex.text.length > (art.snippet || '').length ? ex.text : out.text, image: ex.image || out.image };
+  } catch (e) { console.warn('본문 실패:', url, e.message); }
   articleCache.set(link, out);
   return out;
 }
@@ -150,7 +177,7 @@ http.createServer((req, res) => {
   if (req.url.startsWith('/api/article')) {
     const link = new URL(req.url, 'http://x').searchParams.get('link') || '';
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    if (!link.startsWith('https://news.google.com/rss/articles/')) return res.end('{}');
+    if (!known.has(link)) return res.end('{}');
     return getArticle(link).then((a) => res.end(JSON.stringify(a))).catch((e) => { console.warn('원문 주소 실패:', e.message); res.end(JSON.stringify({ error: e.message })); });
   }
   if (req.url === '/api/stream') {
