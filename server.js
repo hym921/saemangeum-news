@@ -89,6 +89,16 @@ async function poll() {
       fresh.push(a);
     }
   }
+  // 구글 링크 기사는 서버에서 원문 주소를 못 풀 수 있어, 제목으로 Bing을 검색해 원문 주소를 찾아 붙인다
+  await Promise.all(fresh.filter((x) => !x.direct).map(async (a) => {
+    try {
+      const hit = (await fetchBing(a.title.slice(0, 60))).find((b) => keyOf(b).slice(0, 15) === keyOf(a).slice(0, 15));
+      if (!hit) return;
+      known.delete(a.link);
+      Object.assign(a, { link: hit.link, direct: true, snippet: hit.snippet, image: hit.image });
+      known.set(a.link, a);
+    } catch { /* 실패해도 구글 링크로 계속 표시 */ }
+  }));
   lastUpdated = new Date().toISOString();
   if (fresh.length) {
     articles = [...fresh, ...articles].sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
