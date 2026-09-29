@@ -211,11 +211,43 @@ function extract(html) {
       || html.match(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${n}["']`, 'i'));
     return m ? clean(m[1]) : '';
   };
-  const body = html.replace(/<(script|style|nav|header|footer|aside)[\s\S]*?<\/\1>/gi, '');
-  const paras = [...body.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].map((m) => clean(m[1])).filter((t) => t.length > 40 && !/Internet Explorer|저작권|무단\s?전재/.test(t));
-  let text = paras.join('\n\n');
-  if (text.length < 150) text = meta('og:description') || meta('description');
-  return { text: text.slice(0, 1200) + (text.length > 1200 ? '…' : ''), image: meta('og:image') };
+  let body = html.replace(/<(script|style|nav|header|footer|aside|form|noscript)[\s\S]*?<\/\1>/gi, '');
+  // 기사 본문 컨테이너가 보이면 그 지점부터만 본다 (관련기사·인기기사 목록이 섞이는 것을 막음)
+  const start = body.search(/<(?:article|div|section)[^>]+(?:id|class|itemprop)=["'][^"']*(?:articleBody|article[-_]?(?:body|view|content|txt)|news[-_]?(?:body|content|view|text)|view[-_]?(?:cont|content|con)|entry-content|post-content|art_body|newsct_article)[^"']*["']/i);
+  if (start > 0) body = body.slice(start, start + 40000);
+
+  const FOOTER = /등록번호|발행인|편집인|청소년보호책임자|Copyright|All rights reserved|무단\s?전재|저작권|구독하기|Internet Explorer|기사제보|제보하기/i;
+  const isSentence = (t) => /[다요죠음함됨][.”"'’)\]\s]*$/.test(t) || /다\.\s/.test(t);
+  const good = (t) => t.length > 40 && !/^https?:\/\//.test(t) && isSentence(t);
+  const collect = (chunks) => {
+    const out = [];
+    for (const c of chunks) {
+      if (FOOTER.test(c)) { if (out.length) break; continue; } // 하단 정보가 나오면 본문 끝
+      if (good(c) && !out.includes(c)) out.push(c);
+    }
+    return out;
+  };
+
+  let paras = collect([...body.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].map((m) => clean(m[1])));
+  if (paras.join('').length < 150) { // <p> 없이 <br>로만 나뉜 본문
+    paras = collect(body.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(div|p|li)>/gi, '\n').split('\n').map(clean));
+  }
+  return { paras, description: meta('og:description') || meta('description'), image: meta('og:image') };
+}
+
+// 제목과 본문이 같은 기사인지 확인: 제목의 단어가 본문에 충분히 나와야 한다
+function matchesTitle(title, text) {
+  const words = title.split(/[^0-9A-Za-z가-힣]+/).filter((w) => w.length >= 2).map((w) => w.slice(0, Math.max(2, w.length - 1)));
+  if (!words.length) return true;
+  const hit = words.filter((w) => text.includes(w)).length;
+  return hit >= Math.min(2, words.length);
+}
+
+function pickText(title, ex, fallback) {
+  const body = ex.paras.join('\n\n');
+  if (body.length >= 120 && matchesTitle(title, body)) return body.slice(0, 1200) + (body.length > 1200 ? '…' : '');
+  if (ex.description && ex.description.length >= 20 && matchesTitle(title, ex.description)) return ex.description;
+  return fallback || ''; // 확신이 없으면 엉뚱한 글보다 비워 두는 편이 낫다
 }
 
 async function getArticle(link) {
@@ -229,7 +261,7 @@ async function getArticle(link) {
   if (url) {
     try {
       const ex = extract(await fetchHtml(url));
-      out = { url, text: ex.text.length > out.text.length ? ex.text : out.text, image: ex.image || out.image };
+      out = { url, text: pickText(art.title || '', ex, out.text), image: ex.image || out.image };
     } catch (e) { console.warn('본문 실패:', url, e.message); }
   }
   if (out.text) articleCache.set(link, out); // 실패 결과는 캐시하지 않아 다음에 다시 시도
