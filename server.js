@@ -81,17 +81,22 @@ loop();
 
 // ---- 기사 미리보기: 구글 뉴스 링크 → 원문 주소 → 본문 요약 추출 ----
 const articleCache = new Map();
+const HDR = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+  'Accept-Language': 'ko-KR,ko;q=0.9',
+  Cookie: 'CONSENT=YES+cb; SOCS=CAI',
+};
 
 async function resolveUrl(link) {
   const id = link.split('/articles/')[1].split('?')[0];
-  const html = await (await fetch(`https://news.google.com/rss/articles/${id}?oc=5`, { headers: { 'User-Agent': 'Mozilla/5.0' } })).text();
+  const html = await (await fetch(`https://news.google.com/rss/articles/${id}?oc=5`, { headers: HDR })).text();
   const sg = html.match(/data-n-a-sg="([^"]+)"/), ts = html.match(/data-n-a-ts="([^"]+)"/);
-  if (!sg || !ts) throw new Error('resolve failed');
+  if (!sg || !ts) throw new Error('resolve failed: no signature (len ' + html.length + ', ' + html.slice(0, 80).replace(/s+/g, ' ') + ')');
   const inner = JSON.stringify(['garturlreq', [['X', 'X', ['X', 'X'], null, null, 1, 1, 'US:en', null, 1, null, null, null, null, null, 0, 1], 'X', 'X', 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0], id, +ts[1], sg[1]]);
   const body = 'f.req=' + encodeURIComponent(JSON.stringify([[['Fbv4je', inner, null, 'generic']]]));
   const res = await fetch('https://news.google.com/_/DotsSplashUi/data/batchexecute', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'User-Agent': 'Mozilla/5.0' },
+    headers: { ...HDR, 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
     body,
   });
   const t = await res.text();
@@ -146,7 +151,7 @@ http.createServer((req, res) => {
     const link = new URL(req.url, 'http://x').searchParams.get('link') || '';
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     if (!link.startsWith('https://news.google.com/rss/articles/')) return res.end('{}');
-    return getArticle(link).then((a) => res.end(JSON.stringify(a))).catch(() => res.end('{}'));
+    return getArticle(link).then((a) => res.end(JSON.stringify(a))).catch((e) => { console.warn('원문 주소 실패:', e.message); res.end(JSON.stringify({ error: e.message })); });
   }
   if (req.url === '/api/stream') {
     res.writeHead(200, {
