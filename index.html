@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>새만금 AI 데이터센터 뉴스</title>
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--text:#16181d;--muted:#6b7280;--line:#e5e7eb;--accent:#0a5cff;--new:#ff4d4f}
+  @media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a21;--text:#e8eaee;--muted:#8b93a1;--line:#262b35;--accent:#5b9bff}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 -apple-system,"Pretendard","Malgun Gothic",sans-serif}
+  .wrap{max-width:760px;margin:0 auto;padding:0 16px 64px}
+  header{padding:32px 0 16px}
+  h1{margin:0 0 6px;font-size:24px;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:14px}
+  .status{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--muted)}
+  .dot{width:8px;height:8px;border-radius:50%;background:#9ca3af}
+  .live .dot{background:#22c55e;animation:pulse 2s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .toast{position:sticky;top:8px;z-index:5;display:none;margin:8px 0;padding:10px 14px;border-radius:10px;background:var(--accent);color:#fff;font-size:14px;text-align:center}
+  h2{position:sticky;top:0;margin:28px 0 10px;padding:6px 0;background:var(--bg);font-size:14px;color:var(--muted);font-weight:600}
+  h2 span{font-weight:400;margin-left:6px}
+  .card{margin-bottom:8px;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .card:hover,.card.open{border-color:var(--accent)}
+  .head{display:flex;gap:10px;align-items:flex-start;padding:14px 16px;cursor:pointer}
+  .head>div{flex:1;min-width:0}
+  .chev{color:var(--muted);transition:transform .2s;margin-top:2px}
+  .card.open .chev{transform:rotate(180deg)}
+  .body{display:none;padding:0 16px 16px;border-top:1px solid var(--line)}
+  .card.open .body{display:block}
+  .body img{display:block;width:100%;max-height:260px;object-fit:cover;border-radius:8px;margin:14px 0 0}
+  .text{margin-top:12px;font-size:15px;line-height:1.7;white-space:pre-line;color:var(--text)}
+  .text.load{color:var(--muted)}
+  .open-link{display:inline-block;margin-top:12px;font-size:14px;color:var(--accent);text-decoration:none;font-weight:600}
+  .title{font-weight:600;letter-spacing:-.01em}
+  .meta{margin-top:4px;font-size:13px;color:var(--muted)}
+  .badge{display:inline-block;margin-right:6px;padding:0 6px;border-radius:4px;background:var(--new);color:#fff;font-size:11px;font-weight:700;vertical-align:1px}
+  .empty{padding:48px 0;text-align:center;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>새만금 · 현대차그룹 AI 데이터센터</h1>
+    <div class="sub">관련 기사를 최신순, 날짜별로 모아봅니다</div>
+    <div class="status" id="status"><span class="dot"></span><span id="statusText">연결 중…</span></div>
+  </header>
+  <div class="toast" id="toast"></div>
+  <main id="list"><div class="empty">기사를 불러오는 중…</div></main>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+let articles = [];
+const fresh = new Set(); // 이번 세션에 실시간으로 들어온 기사
+
+const dayKey = (d) => new Date(d).toLocaleDateString('sv-SE'); // YYYY-MM-DD (로컬)
+const dayLabel = (k) => {
+  const today = dayKey(Date.now()), y = dayKey(Date.now() - 864e5);
+  const w = ['일','월','화','수','목','금','토'][new Date(k + 'T00:00').getDay()];
+  const [Y, M, D] = k.split('-');
+  return `${k === today ? '오늘 · ' : k === y ? '어제 · ' : ''}${Y}년 ${+M}월 ${+D}일 (${w})`;
+};
+const ago = (d) => {
+  const m = Math.floor((Date.now() - new Date(d)) / 6e4);
+  if (m < 1) return '방금 전';
+  if (m < 60) return `${m}분 전`;
+  if (m < 1440) return `${Math.floor(m / 60)}시간 전`;
+  return new Date(d).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+};
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function render() {
+  if (!articles.length) { $('list').innerHTML = '<div class="empty">아직 수집된 기사가 없습니다.</div>'; return; }
+  const groups = {};
+  articles.forEach((a) => (groups[dayKey(a.pubDate)] ||= []).push(a));
+  $('list').innerHTML = Object.keys(groups).sort().reverse().map((k) =>
+    `<h2>${dayLabel(k)}<span>${groups[k].length}건</span></h2>` +
+    groups[k].map((a) =>
+      `<div class="card${opened.has(a.link) ? ' open' : ''}" data-link="${esc(a.link)}">
+        <div class="head">
+          <div>
+            <div class="title">${fresh.has(a.link) ? '<span class="badge">NEW</span>' : ''}${esc(a.title)}</div>
+            <div class="meta">${esc(a.source)} · ${ago(a.pubDate)}</div>
+          </div>
+          <span class="chev">▾</span>
+        </div>
+        <div class="body">${bodyHtml(a.link)}</div>
+      </div>`).join('')
+  ).join('');
+}
+
+const opened = new Set();   // 펼쳐 둔 기사 (목록이 다시 그려져도 유지)
+const details = {};         // link → { url, text, image } (불러온 본문 캐시)
+
+function bodyHtml(link) {
+  const d = details[link];
+  if (!d) return '<div class="text load">본문을 불러오는 중…</div>';
+  const img = d.image ? `<img src="${esc(d.image)}" alt="" loading="lazy" onerror="this.remove()">` : '';
+  const txt = d.text ? esc(d.text) : '본문 미리보기를 가져오지 못했습니다. 아래 원문 링크에서 확인해 주세요.';
+  const href = d.url || link;
+  return `${img}<div class="text">${txt}</div><a class="open-link" href="${esc(href)}" target="_blank" rel="noopener">원문 기사 보기 ↗</a>`;
+}
+
+$('list').addEventListener('click', async (e) => {
+  const head = e.target.closest('.head');
+  if (!head) return;
+  const card = head.parentElement, link = card.dataset.link;
+  const isOpen = card.classList.toggle('open');
+  isOpen ? opened.add(link) : opened.delete(link);
+  if (isOpen && !details[link]) {
+    try { details[link] = await (await fetch('/api/article?link=' + encodeURIComponent(link))).json(); }
+    catch { details[link] = {}; }
+    card.querySelector('.body').innerHTML = bodyHtml(link);
+  }
+});
+
+function setStatus(live, iso) {
+  $('status').className = 'status' + (live ? ' live' : '');
+  const t = iso ? new Date(iso).toLocaleTimeString('ko-KR') : '';
+  $('statusText').textContent = live ? `실시간 연결됨 · 마지막 확인 ${t}` : '재연결 중…';
+}
+
+async function load() {
+  const r = await (await fetch('/api/news')).json();
+  articles = r.articles;
+  render();
+  setStatus(true, r.lastUpdated);
+}
+
+function stream() {
+  const es = new EventSource('/api/stream');
+  es.onopen = () => setStatus(true);
+  es.onerror = () => setStatus(false);
+  es.addEventListener('update', (e) => {
+    const { fresh: added, lastUpdated } = JSON.parse(e.data);
+    setStatus(true, lastUpdated);
+    if (!added.length) return;
+    added.forEach((a) => fresh.add(a.link));
+    articles = [...added, ...articles].sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+    render();
+    $('toast').textContent = `새 기사 ${added.length}건이 추가되었습니다`;
+    $('toast').style.display = 'block';
+    setTimeout(() => ($('toast').style.display = 'none'), 5000);
+  });
+}
+
+load().then(stream);
+setInterval(render, 60000); // "n분 전" 갱신
+</script>
+</body>
+</html>

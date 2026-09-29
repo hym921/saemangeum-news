@@ -1,0 +1,5 @@
+node_modules
+*.log
+launch.vbs
+start.bat
+stop.bat
