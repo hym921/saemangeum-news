@@ -68,6 +68,17 @@ async function fetchBing(q) {
   });
 }
 
+// 네이버 뉴스 검색(키 불필요)에서 제목으로 원문 주소·요약을 찾는다
+async function fetchNaver(q) {
+  const url = `https://search.naver.com/search.naver?where=news&sort=1&query=${encodeURIComponent(q)}`;
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36', 'Accept-Language': 'ko-KR,ko;q=0.9' } });
+  if (!res.ok) throw new Error(`${res.status} naver`);
+  const html = await res.text();
+  const strip = (h) => decode(h.replace(/<[^>]+>/g, '')).replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+  return [...html.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*data-heatmap-target="\.tit"[^>]*>([\s\S]*?)<\/a>(?:\s*<a[^>]*data-heatmap-target="\.body"[^>]*>([\s\S]*?)<\/a>)?/g)]
+    .map((m) => ({ link: decode(m[1]), title: strip(m[2]), snippet: m[3] ? strip(m[3]) : '' }));
+}
+
 let articles = []; // 최신순
 let lastUpdated = null;
 const seen = new Set();
@@ -92,7 +103,10 @@ async function poll() {
   // 구글 링크 기사는 서버에서 원문 주소를 못 풀 수 있어, 제목으로 Bing을 검색해 원문 주소를 찾아 붙인다
   await Promise.all(fresh.filter((x) => !x.direct).map(async (a) => {
     try {
-      const hit = (await fetchBing(a.title.slice(0, 60))).find((b) => keyOf(b).slice(0, 15) === keyOf(a).slice(0, 15));
+      const win = keyOf(a).slice(3, 15); // 앞머리 [태그]·말줄임 차이를 피해 중간 구간으로 비교
+      const same = (b) => keyOf(b).includes(win);
+      let hit = (await fetchBing(a.title.slice(0, 60))).find(same);
+      if (!hit) hit = (await fetchNaver(a.title.replace(/^[[^]]*]s*/, '').slice(0, 40))).find(same);
       if (!hit) return;
       known.delete(a.link);
       Object.assign(a, { link: hit.link, direct: true, snippet: hit.snippet, image: hit.image });
