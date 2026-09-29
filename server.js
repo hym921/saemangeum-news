@@ -38,10 +38,10 @@ function tagsOf(text) {
   return Object.keys(RULES).filter((k) => RULES[k].test(text));
 }
 
-// 관련성: 새만금 언급 + 세 분류 중 하나 이상, 또는 현대차 + 데이터센터
+// 관련성: 새만금 언급 + 현대차 또는 AIDC 관련(새만금개발청 단독 기사는 제외), 또는 현대차 + 데이터센터
 function isRelevant(text) {
   const tags = tagsOf(text);
-  if (/새만금/.test(text) && tags.length) return true;
+  if (/새만금/.test(text) && (tags.includes('hyundai') || tags.includes('aidc'))) return true;
   return tags.includes('hyundai') && /데이터\s?센터/.test(text);
 }
 
