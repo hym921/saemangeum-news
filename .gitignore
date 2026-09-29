@@ -3,3 +3,4 @@ node_modules
 launch.vbs
 start.bat
 stop.bat
+data/
