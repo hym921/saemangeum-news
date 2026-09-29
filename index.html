@@ -43,20 +43,6 @@
   .tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .tab.on b{color:#fff;opacity:.85}
   h2{top:52px}
-  .wrap{max-width:1120px}
-  .cols{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:28px;align-items:start}
-  .side{position:sticky;top:12px;margin-top:10px}
-  .sum{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
-  .sum>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:700;letter-spacing:-.01em}
-  .sum>summary::-webkit-details-marker{display:none}
-  .pill{padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700;background:var(--line);color:var(--muted)}
-  .pill.ai{background:var(--accent);color:#fff}
-  .sum-r{margin:6px 0 10px;font-size:12px;color:var(--muted)}
-  .sum ul{margin:0;padding:0;list-style:none;display:grid;gap:10px}
-  .sum li{position:relative;padding-left:14px;font-size:14px;line-height:1.6}
-  .sum li::before{content:"";position:absolute;left:0;top:.65em;width:6px;height:6px;border-radius:50%;background:var(--accent)}
-  .sum-f{margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
-  @media (max-width:1000px){.cols{grid-template-columns:minmax(0,1fr)}.side{position:static;order:-1;margin:0 0 4px}}
 </style>
 </head>
 <body>
@@ -66,14 +52,9 @@
     <div class="sub">관련 기사를 최신순, 날짜별로 모아봅니다</div>
     <div class="status" id="status"><span class="dot"></span><span id="statusText">연결 중…</span></div>
   </header>
-  <div class="cols">
-    <section>
-      <nav class="tabs" id="tabs"></nav>
-      <div class="toast" id="toast"></div>
-      <main id="list"><div class="empty">기사를 불러오는 중…</div></main>
-    </section>
-    <aside class="side" id="side"></aside>
-  </div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="toast" id="toast"></div>
+  <main id="list"><div class="empty">기사를 불러오는 중…</div></main>
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -175,42 +156,17 @@ function setStatus(live, iso) {
   $('statusText').textContent = live ? `실시간 연결됨 · 마지막 확인 ${t}` : '재연결 중…';
 }
 
-function renderSummary(s) {
-  const wide = matchMedia('(min-width:1001px)').matches;
-  let body;
-  if (!s || !s.items || !s.items.length) {
-    body = '<div class="sum-r">요약을 준비 중입니다…</div>';
-  } else {
-    const range = `${md(s.from)} ~ ${md(s.to)} · 기사 ${s.count}건`;
-    const note = s.mode === 'ai' ? 'AI가 최근 1주일 기사를 요약했습니다' : '여러 매체가 다룬 주요 기사 순입니다';
-    body = `<div class="sum-r">${range}</div>
-      <ul>${s.items.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>
-      <div class="sum-f">${note} · ${new Date(s.updated).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} 갱신</div>`;
-  }
-  const open = $('side').querySelector('details')?.open ?? wide;
-  $('side').innerHTML = `<details class="sum"${open ? ' open' : ''}>
-    <summary><span>이번 주 핵심 요약</span><span class="pill${s && s.mode === 'ai' ? ' ai' : ''}">${s && s.mode === 'ai' ? 'AI' : '헤드라인'}</span></summary>
-    ${body}</details>`;
-}
-const md = (d) => { const x = new Date(d); return `${x.getMonth() + 1}/${x.getDate()}`; };
-
-async function loadSummary() {
-  try { renderSummary((await (await fetch('/api/summary')).json()).summary); } catch { renderSummary(null); }
-}
-
 async function load() {
   const r = await (await fetch('/api/news')).json();
   articles = r.articles;
   render();
   setStatus(true, r.lastUpdated);
-  loadSummary();
 }
 
 function stream() {
   const es = new EventSource('/api/stream');
   es.onopen = () => setStatus(true);
   es.onerror = () => setStatus(false);
-  es.addEventListener('summary', (e) => renderSummary(JSON.parse(e.data).summary));
   es.addEventListener('update', (e) => {
     const { fresh: added, lastUpdated } = JSON.parse(e.data);
     setStatus(true, lastUpdated);

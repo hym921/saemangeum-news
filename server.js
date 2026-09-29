@@ -163,93 +163,7 @@ async function poll() {
   upgradeInBackground(fresh); // 화면에 먼저 내보내고, 원문 주소 찾기는 뒤에서 진행
 }
 
-// ---- 주간 핵심 기사 요약 ----
-// ANTHROPIC_API_KEY 환경 변수가 있으면 Claude가 요약하고, 없으면 여러 매체가 다룬 기사 순으로 헤드라인을 뽑는다.
-const API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const API_URL = process.env.ANTHROPIC_API_URL || 'https://api.anthropic.com/v1/messages';
-const SUMMARY_MODEL = process.env.SUMMARY_MODEL || 'claude-haiku-4-5-20251001';
-const WEEK_MS = 7 * 864e5;
-
-let summary = { mode: 'none', items: [], updated: null, from: null, to: null };
-let summarySig = '';
-let summaryBusy = false;
-
-const md = (d) => { const x = new Date(d); return `${x.getMonth() + 1}/${x.getDate()}`; };
-
-function weekArticles() {
-  const since = Date.now() - WEEK_MS;
-  return articles.filter((a) => new Date(a.pubDate) >= since);
-}
-
-// 같은 사건을 다룬 기사끼리 묶는다 (제목 중간 구간이 같으면 같은 묶음)
-function cluster(list) {
-  const groups = new Map();
-  for (const a of list) {
-    const k = keyOf(a).slice(3, 15);
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(a);
-  }
-  return [...groups.values()]
-    .map((g) => ({ rep: g[0], n: g.length, tags: new Set(g.flatMap((x) => x.tags || [])).size }))
-    .sort((x, y) => (y.n + y.tags) - (x.n + x.tags) || new Date(y.rep.pubDate) - new Date(x.rep.pubDate));
-}
-
-function headlineSummary(list) {
-  return cluster(list).slice(0, 5).map((c) => `${c.rep.title} (${md(c.rep.pubDate)}, ${c.rep.source})`);
-}
-
-async function aiSummary(list) {
-  const src = cluster(list).slice(0, 25).map((c) => {
-    const a = c.rep;
-    return `[${md(a.pubDate)}] ${a.title} (${a.source}${c.n > 1 ? `, 외 ${c.n - 1}개 매체 보도` : ''})${a.snippet ? ' — ' + a.snippet.slice(0, 160) : ''}`;
-  }).join('\n');
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': API_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({
-      model: SUMMARY_MODEL,
-      max_tokens: 700,
-      messages: [{
-        role: 'user',
-        content: `아래는 최근 1주일간 "새만금 현대차그룹 AI 데이터센터" 관련 기사 목록입니다.\n핵심 흐름을 한국어로 3~5줄로 요약하세요.\n- 각 줄은 "- "로 시작하고, 한 줄에 한 가지 핵심 사실(날짜·수치·주체 포함)만 담으세요.\n- 목록에 없는 내용은 추측하지 말고, 중복된 내용은 합치세요.\n- 다른 설명 없이 요약 줄만 출력하세요.\n\n${src}`,
-      }],
-    }),
-    signal: AbortSignal.timeout(60000),
-  });
-  if (!res.ok) throw new Error(`AI ${res.status} ${(await res.text()).slice(0, 200)}`);
-  const data = await res.json();
-  const text = (data.content || []).map((b) => b.text || '').join('\n');
-  const items = text.split('\n').map((l) => l.replace(/^\s*[-•·*]\s*/, '').trim()).filter((l) => l.length > 8);
-  if (!items.length) throw new Error('AI 응답 비어 있음');
-  return items.slice(0, 5);
-}
-
-async function refreshSummary() {
-  if (summaryBusy) return;
-  const list = weekArticles();
-  if (!list.length) return;
-  const sig = cluster(list).slice(0, 25).map((c) => c.rep.link).join('|');
-  const age = summary.updated ? Date.now() - new Date(summary.updated) : Infinity;
-  // 기사 구성이 바뀌었을 때만, 그리고 AI는 2시간에 한 번까지만 (비용 절약)
-  if (sig === summarySig && age < 12 * 36e5) return;
-  if (API_KEY && summary.mode === 'ai' && sig !== summarySig && age < 2 * 36e5) return;
-  summaryBusy = true;
-  try {
-    let mode = 'headline', items;
-    if (API_KEY) {
-      try { items = await aiSummary(list); mode = 'ai'; }
-      catch (e) { console.warn('AI 요약 실패:', e.message); }
-    }
-    if (!items) items = headlineSummary(list);
-    const dates = list.map((a) => new Date(a.pubDate));
-    summary = { mode, items, updated: new Date().toISOString(), from: new Date(Math.min(...dates)).toISOString(), to: new Date(Math.max(...dates)).toISOString(), count: list.length };
-    summarySig = sig;
-    const payload = JSON.stringify({ summary });
-    for (const c of clients) c.write(`event: summary\ndata: ${payload}\n\n`);
-  } finally { summaryBusy = false; }
-}
-
-const loop = () => poll().then(refreshSummary).catch((e) => console.error(e.message)).finally(() => setTimeout(loop, POLL_MS));
+const loop = () => poll().catch((e) => console.error(e.message)).finally(() => setTimeout(loop, POLL_MS));
 loop();
 
 // ---- 기사 미리보기: 원문 주소 → 본문 요약 추출 ----
@@ -360,10 +274,6 @@ http.createServer((req, res) => {
   if (req.url.startsWith('/api/news')) {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     return res.end(JSON.stringify({ articles, lastUpdated }));
-  }
-  if (req.url.startsWith('/api/summary')) {
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    return res.end(JSON.stringify({ summary }));
   }
   if (req.url.startsWith('/api/article')) {
     const link = new URL(req.url, 'http://x').searchParams.get('link') || '';
