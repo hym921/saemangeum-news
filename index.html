@@ -36,6 +36,13 @@
   .meta{margin-top:4px;font-size:13px;color:var(--muted)}
   .badge{display:inline-block;margin-right:6px;padding:0 6px;border-radius:4px;background:var(--new);color:#fff;font-size:11px;font-weight:700;vertical-align:1px}
   .empty{padding:48px 0;text-align:center;color:var(--muted)}
+  .tabs{position:sticky;top:0;z-index:6;display:flex;gap:6px;padding:10px 0;background:var(--bg);overflow-x:auto;scrollbar-width:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .tab{flex:none;padding:8px 14px;border:1px solid var(--line);border-radius:999px;background:var(--card);color:var(--text);font:inherit;font-size:14px;cursor:pointer;white-space:nowrap}
+  .tab b{margin-left:5px;font-weight:600;color:var(--muted)}
+  .tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .tab.on b{color:#fff;opacity:.85}
+  h2{top:52px}
 </style>
 </head>
 <body>
@@ -45,6 +52,7 @@
     <div class="sub">관련 기사를 최신순, 날짜별로 모아봅니다</div>
     <div class="status" id="status"><span class="dot"></span><span id="statusText">연결 중…</span></div>
   </header>
+  <nav class="tabs" id="tabs"></nav>
   <div class="toast" id="toast"></div>
   <main id="list"><div class="empty">기사를 불러오는 중…</div></main>
 </div>
@@ -69,10 +77,38 @@ const ago = (d) => {
 };
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+const TABS = [
+  ['hyundai', '현대차 관련'],
+  ['agency', '새만금청 관련'],
+  ['aidc', 'AIDC 관련'],
+  ['all', '전체 기사'],
+];
+let tab = 'all';
+try { tab = TABS.some((t) => t[0] === location.hash.slice(1)) ? location.hash.slice(1) : 'all'; } catch {}
+
+const inTab = (a, t) => t === 'all' || (a.tags || []).includes(t);
+
+function renderTabs() {
+  $('tabs').innerHTML = TABS.map(([k, label]) =>
+    `<button class="tab${k === tab ? ' on' : ''}" data-tab="${k}">${label}<b>${articles.filter((a) => inTab(a, k)).length}</b></button>`
+  ).join('');
+}
+
+$('tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('.tab');
+  if (!b) return;
+  tab = b.dataset.tab;
+  history.replaceState(null, '', '#' + tab);
+  window.scrollTo(0, 0);
+  render();
+});
+
 function render() {
-  if (!articles.length) { $('list').innerHTML = '<div class="empty">아직 수집된 기사가 없습니다.</div>'; return; }
+  renderTabs();
+  const shown = articles.filter((a) => inTab(a, tab));
+  if (!shown.length) { $('list').innerHTML = '<div class="empty">해당하는 기사가 없습니다.</div>'; return; }
   const groups = {};
-  articles.forEach((a) => (groups[dayKey(a.pubDate)] ||= []).push(a));
+  shown.forEach((a) => (groups[dayKey(a.pubDate)] ||= []).push(a));
   $('list').innerHTML = Object.keys(groups).sort().reverse().map((k) =>
     `<h2>${dayLabel(k)}<span>${groups[k].length}건</span></h2>` +
     groups[k].map((a) =>
@@ -107,7 +143,7 @@ $('list').addEventListener('click', async (e) => {
   const card = head.parentElement, link = card.dataset.link;
   const isOpen = card.classList.toggle('open');
   isOpen ? opened.add(link) : opened.delete(link);
-  if (isOpen && !details[link]) {
+  if (isOpen && !details[link]?.text) {
     try { details[link] = await (await fetch('/api/article?link=' + encodeURIComponent(link))).json(); }
     catch { details[link] = {}; }
     card.querySelector('.body').innerHTML = bodyHtml(link);

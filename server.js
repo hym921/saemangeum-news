@@ -5,18 +5,45 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
-const POLL_MS = 3 * 60 * 1000; // 3분마다 새 기사 수집
+const POLL_MS = 5 * 60 * 1000; // 5분마다 새 기사 수집
 
+// 검색어 (Google 뉴스 + Bing 뉴스에 모두 요청)
 const QUERIES = [
+  '현대차 새만금',
+  '새만금 현대차그룹',
   '새만금 현대차 AI 데이터센터',
-  '새만금 현대차그룹 데이터센터',
-  '새만금 산업단지 현대자동차 AI',
   '새만금 AI 데이터센터',
+  '새만금 데이터센터',
+  '새만금개발청 현대차',
+  '새만금개발청 AI 데이터센터',
+  '새만금개발청',
+  '새만금 현대차 수소',
+  '새만금 현대차 로봇',
+  '새만금 피지컬 AI',
+  '새만금 산업단지 현대자동차',
+  '새만금 현대오토에버',
+  '새만금 GPU 데이터센터',
+  '현대차 새만금 투자 8.9조',
+  '새만금 건축심의',
 ];
 
-// 관련성 필터: 제목에 새만금 + (데이터센터|AI) + (현대) 포함
-const isRelevant = (t) =>
-  /새만금/.test(t) && /(데이터\s?센터|AI|인공지능)/i.test(t) && /(현대|HD현대|기아)/.test(t);
+// 분류 키워드 (탭): 제목 + 요약에서 검사
+const RULES = {
+  hyundai: /현대|기아|정의선/,
+  agency: /새만금\s?개발청|새만금청|새만금개발공사|새만금위원회/,
+  aidc: /데이터\s?센터|AI\s?DC|AIDC|GPU|인공지능|\bAI\b|피지컬/i,
+};
+
+function tagsOf(text) {
+  return Object.keys(RULES).filter((k) => RULES[k].test(text));
+}
+
+// 관련성: 새만금 언급 + 세 분류 중 하나 이상, 또는 현대차 + 데이터센터
+function isRelevant(text) {
+  const tags = tagsOf(text);
+  if (/새만금/.test(text) && tags.length) return true;
+  return tags.includes('hyundai') && /데이터\s?센터/.test(text);
+}
 
 const decode = (s) =>
   s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
@@ -28,10 +55,10 @@ const tag = (xml, name) => {
   return m ? decode(m[1]).trim() : '';
 };
 
-async function fetchQuery(q) {
+async function fetchGoogle(q) {
   const url = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=ko&gl=KR&ceid=KR:ko`;
   const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-  if (!res.ok) throw new Error(`${res.status} ${q}`);
+  if (!res.ok) throw new Error(`${res.status} google ${q}`);
   const xml = await res.text();
   return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map((m) => {
     const it = m[1];
@@ -47,6 +74,7 @@ async function fetchQuery(q) {
   });
 }
 
+// Bing 뉴스 RSS: 링크 안에 원문 주소가 그대로 들어 있어 미리보기가 안정적이다
 async function fetchBing(q) {
   const url = `https://www.bing.com/news/search?q=${encodeURIComponent(q)}&format=rss&setmkt=ko-KR&count=50`;
   const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
@@ -55,11 +83,11 @@ async function fetchBing(q) {
   return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map((m) => {
     const it = m[1];
     const raw = tag(it, 'link');
-    const real = new URL(raw).searchParams.get('url'); // 원문 주소가 그대로 들어 있음
+    const real = new URL(raw).searchParams.get('url');
     return {
       title: tag(it, 'title'),
       link: real || raw,
-      direct: !!real,
+      url: real || '',
       source: tag(it, 'News:Source').replace(/ on MSN$/, '') || '출처 미상',
       pubDate: new Date(tag(it, 'pubDate')).toISOString(),
       snippet: tag(it, 'description'),
@@ -68,15 +96,17 @@ async function fetchBing(q) {
   });
 }
 
-// 네이버 뉴스 검색(키 불필요)에서 제목으로 원문 주소·요약을 찾는다
+// 네이버 뉴스 검색(키 불필요): 제목으로 원문 주소·요약을 찾는 용도
 async function fetchNaver(q) {
   const url = `https://search.naver.com/search.naver?where=news&sort=1&query=${encodeURIComponent(q)}`;
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36', 'Accept-Language': 'ko-KR,ko;q=0.9' } });
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36', 'Accept-Language': 'ko-KR,ko;q=0.9' },
+  });
   if (!res.ok) throw new Error(`${res.status} naver`);
   const html = await res.text();
   const strip = (h) => decode(h.replace(/<[^>]+>/g, '')).replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
   return [...html.matchAll(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*data-heatmap-target="\.tit"[^>]*>([\s\S]*?)<\/a>(?:\s*<a[^>]*data-heatmap-target="\.body"[^>]*>([\s\S]*?)<\/a>)?/g)]
-    .map((m) => ({ link: decode(m[1]), title: strip(m[2]), snippet: m[3] ? strip(m[3]) : '' }));
+    .map((m) => ({ url: decode(m[1]), title: strip(m[2]), snippet: m[3] ? strip(m[3]) : '' }));
 }
 
 let articles = []; // 최신순
@@ -87,32 +117,41 @@ const clients = new Set();
 
 const keyOf = (a) => a.title.replace(/[\s\W]+/g, '').slice(0, 40);
 
+// 구글 링크 기사는 서버에서 원문 주소를 못 풀 수 있어, 제목으로 Bing·네이버를 검색해 원문 주소를 찾아 붙인다
+async function findOriginal(a) {
+  try {
+    const win = keyOf(a).slice(3, 15); // 앞머리 [태그]·말줄임 차이를 피해 중간 구간으로 비교
+    const same = (b) => keyOf(b).includes(win);
+    let hit = (await fetchBing(a.title.slice(0, 60))).find(same);
+    if (hit) hit = { url: hit.url, snippet: hit.snippet, image: hit.image };
+    else hit = (await fetchNaver(a.title.replace(/^\[[^\]]*\]\s*/, '').slice(0, 40))).find(same);
+    if (hit && hit.url) Object.assign(a, { url: hit.url, snippet: a.snippet || hit.snippet, image: a.image || hit.image });
+  } catch { /* 실패해도 구글 링크로 계속 표시 */ }
+}
+
+async function upgradeInBackground(list) {
+  const queue = list.filter((a) => !a.url);
+  await Promise.all(Array.from({ length: 6 }, async () => {
+    while (queue.length) await findOriginal(queue.shift());
+  }));
+}
+
 async function poll() {
-  const results = await Promise.allSettled([...[...QUERIES, '현대차 새만금 데이터센터', '새만금 AI 데이터센터 착공', '새만금 현대차 8.9조'].map(fetchBing), ...QUERIES.map(fetchQuery)]);
+  const jobs = QUERIES.flatMap((q) => [fetchBing(q), fetchGoogle(q)]); // Bing 먼저: 같은 기사면 원문 주소가 있는 쪽이 남는다
+  const results = await Promise.allSettled(jobs);
   const fresh = [];
   for (const r of results) {
     if (r.status !== 'fulfilled') { console.warn('수집 실패:', r.reason.message); continue; }
     for (const a of r.value) {
+      const text = a.title + ' ' + (a.snippet || '');
       const k = keyOf(a);
-      if (!isRelevant(a.title) || seen.has(k)) continue;
+      if (!isRelevant(text) || seen.has(k)) continue;
       seen.add(k);
+      a.tags = tagsOf(text);
       known.set(a.link, a);
       fresh.push(a);
     }
   }
-  // 구글 링크 기사는 서버에서 원문 주소를 못 풀 수 있어, 제목으로 Bing을 검색해 원문 주소를 찾아 붙인다
-  await Promise.all(fresh.filter((x) => !x.direct).map(async (a) => {
-    try {
-      const win = keyOf(a).slice(3, 15); // 앞머리 [태그]·말줄임 차이를 피해 중간 구간으로 비교
-      const same = (b) => keyOf(b).includes(win);
-      let hit = (await fetchBing(a.title.slice(0, 60))).find(same);
-      if (!hit) hit = (await fetchNaver(a.title.replace(/^[[^]]*]s*/, '').slice(0, 40))).find(same);
-      if (!hit) return;
-      known.delete(a.link);
-      Object.assign(a, { link: hit.link, direct: true, snippet: hit.snippet, image: hit.image });
-      known.set(a.link, a);
-    } catch { /* 실패해도 구글 링크로 계속 표시 */ }
-  }));
   lastUpdated = new Date().toISOString();
   if (fresh.length) {
     articles = [...fresh, ...articles].sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
@@ -121,12 +160,13 @@ async function poll() {
   const first = fresh.length && articles.length === fresh.length;
   const payload = JSON.stringify({ fresh: first ? [] : fresh, lastUpdated });
   for (const c of clients) c.write(`event: update\ndata: ${payload}\n\n`);
+  upgradeInBackground(fresh); // 화면에 먼저 내보내고, 원문 주소 찾기는 뒤에서 진행
 }
 
 const loop = () => poll().catch((e) => console.error(e.message)).finally(() => setTimeout(loop, POLL_MS));
 loop();
 
-// ---- 기사 미리보기: 구글 뉴스 링크 → 원문 주소 → 본문 요약 추출 ----
+// ---- 기사 미리보기: 원문 주소 → 본문 요약 추출 ----
 const articleCache = new Map();
 const HDR = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
@@ -134,11 +174,11 @@ const HDR = {
   Cookie: 'CONSENT=YES+cb; SOCS=CAI',
 };
 
-async function resolveUrl(link) {
+async function resolveGoogleUrl(link) {
   const id = link.split('/articles/')[1].split('?')[0];
   const html = await (await fetch(`https://news.google.com/rss/articles/${id}?oc=5`, { headers: HDR })).text();
   const sg = html.match(/data-n-a-sg="([^"]+)"/), ts = html.match(/data-n-a-ts="([^"]+)"/);
-  if (!sg || !ts) throw new Error('resolve failed: no signature (len ' + html.length + ', ' + html.slice(0, 80).replace(/s+/g, ' ') + ')');
+  if (!sg || !ts) throw new Error('resolve failed');
   const inner = JSON.stringify(['garturlreq', [['X', 'X', ['X', 'X'], null, null, 1, 1, 'US:en', null, 1, null, null, null, null, null, 0, 1], 'X', 'X', 1, [1, 1, 1], 1, 1, null, 0, 0, null, 0], id, +ts[1], sg[1]]);
   const body = 'f.req=' + encodeURIComponent(JSON.stringify([[['Fbv4je', inner, null, 'generic']]]));
   const res = await fetch('https://news.google.com/_/DotsSplashUi/data/batchexecute', {
@@ -163,7 +203,7 @@ async function fetchHtml(url) {
 const clean = (h) =>
   decode(h.replace(/<[^>]+>/g, ' ')).replace(/&nbsp;/g, ' ').replace(/&middot;/g, '·')
     .replace(/&[lr]squo;/g, "'").replace(/&[lr]dquo;/g, '"').replace(/&hellip;/g, '…')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(n)).replace(/\s+/g, ' ').trim();
+    .replace(/\s+/g, ' ').trim();
 
 function extract(html) {
   const meta = (n) => {
@@ -181,13 +221,18 @@ function extract(html) {
 async function getArticle(link) {
   if (articleCache.has(link)) return articleCache.get(link);
   const art = known.get(link) || {};
-  const url = art.direct ? link : await resolveUrl(link);
-  let out = { url, text: art.snippet || '', image: art.image || '' };
-  try {
-    const ex = extract(await fetchHtml(url));
-    out = { url, text: ex.text.length > (art.snippet || '').length ? ex.text : out.text, image: ex.image || out.image };
-  } catch (e) { console.warn('본문 실패:', url, e.message); }
-  articleCache.set(link, out);
+  let url = art.url;
+  if (!url && link.startsWith('https://news.google.com/')) {
+    try { url = await resolveGoogleUrl(link); } catch (e) { console.warn('구글 링크 해석 실패:', e.message); }
+  }
+  let out = { url: url || link, text: art.snippet || '', image: art.image || '' };
+  if (url) {
+    try {
+      const ex = extract(await fetchHtml(url));
+      out = { url, text: ex.text.length > out.text.length ? ex.text : out.text, image: ex.image || out.image };
+    } catch (e) { console.warn('본문 실패:', url, e.message); }
+  }
+  if (out.text) articleCache.set(link, out); // 실패 결과는 캐시하지 않아 다음에 다시 시도
   return out;
 }
 
@@ -202,7 +247,7 @@ http.createServer((req, res) => {
     const link = new URL(req.url, 'http://x').searchParams.get('link') || '';
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     if (!known.has(link)) return res.end('{}');
-    return getArticle(link).then((a) => res.end(JSON.stringify(a))).catch((e) => { console.warn('원문 주소 실패:', e.message); res.end(JSON.stringify({ error: e.message })); });
+    return getArticle(link).then((a) => res.end(JSON.stringify(a))).catch(() => res.end('{}'));
   }
   if (req.url === '/api/stream') {
     res.writeHead(200, {
