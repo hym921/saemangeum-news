@@ -160,75 +160,11 @@ async function poll() {
   const first = fresh.length && articles.length === fresh.length;
   const payload = JSON.stringify({ fresh: first ? [] : fresh, lastUpdated });
   for (const c of clients) c.write(`event: update\ndata: ${payload}\n\n`);
-  if (fresh.length) saveStore();
-  upgradeInBackground(fresh).then(() => fresh.length && saveStore()); // 화면에 먼저 내보내고, 원문 주소 찾기는 뒤에서 진행
-}
-
-// ---- 기사 저장: 재시작해도 기사가 쌓이도록 최근 1년치를 보관한다 ----
-// UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN 이 있으면 Upstash(무료 Redis)에, 없으면 data/articles.json 파일에 저장한다.
-// (Render 무료 플랜은 재시작 때 파일이 지워지므로, 배포 환경에서는 Upstash 설정이 필요하다.)
-const zlib = require('zlib');
-const KEEP_MS = 365 * 864e5;
-const STORE_KEY = 'saemangeum:articles';
-const REDIS_URL = (process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/$/, '');
-const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
-const DATA_FILE = path.join(process.env.DATA_DIR || path.join(__dirname, 'data'), 'articles.json');
-let saveChain = Promise.resolve();
-
-const redis = async (cmd) => {
-  const res = await fetch(REDIS_URL, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'content-type': 'application/json' },
-    body: JSON.stringify(cmd),
-    signal: AbortSignal.timeout(20000),
-  });
-  if (!res.ok) throw new Error(`redis ${res.status}`);
-  return (await res.json()).result;
-};
-
-const pack = (list) => list.map(({ title, link, url, source, pubDate, snippet, image, tags }) => ({ title, link, url, source, pubDate, snippet, image, tags }));
-
-async function loadStore() {
-  try {
-    let list;
-    if (REDIS_URL && REDIS_TOKEN) {
-      const raw = await redis(['GET', STORE_KEY]);
-      if (raw) list = JSON.parse(zlib.gunzipSync(Buffer.from(raw, 'base64')).toString('utf8'));
-    } else if (fs.existsSync(DATA_FILE)) {
-      list = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    }
-    if (!Array.isArray(list)) return;
-    const since = Date.now() - KEEP_MS;
-    articles = list.filter((a) => new Date(a.pubDate) >= since).sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
-    for (const a of articles) { seen.add(keyOf(a)); known.set(a.link, a); }
-    console.log(`저장된 기사 ${articles.length}건 불러옴 (${REDIS_URL ? 'Upstash' : '파일'})`);
-  } catch (e) { console.warn('저장된 기사 불러오기 실패:', e.message); }
-}
-
-function saveStore() {
-  // 저장이 겹치지 않게 줄 세운다. 1년이 지난 기사는 이때 정리한다.
-  saveChain = saveChain.then(async () => {
-    try {
-      const since = Date.now() - KEEP_MS;
-      articles = articles.filter((a) => new Date(a.pubDate) >= since);
-      const list = pack(articles);
-      if (REDIS_URL && REDIS_TOKEN) {
-        await redis(['SET', STORE_KEY, zlib.gzipSync(JSON.stringify(list)).toString('base64')]);
-      } else {
-        fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-        fs.writeFileSync(DATA_FILE + '.tmp', JSON.stringify(list));
-        fs.renameSync(DATA_FILE + '.tmp', DATA_FILE);
-      }
-    } catch (e) { console.warn('기사 저장 실패:', e.message); }
-  });
-  return saveChain;
+  upgradeInBackground(fresh); // 화면에 먼저 내보내고, 원문 주소 찾기는 뒤에서 진행
 }
 
 const loop = () => poll().catch((e) => console.error(e.message)).finally(() => setTimeout(loop, POLL_MS));
-loadStore().then(() => {
-  loop();
-  upgradeInBackground(articles).then(() => articles.length && saveStore()); // 저장돼 있던 기사 중 원문 주소가 없는 것도 다시 시도
-});
+loop();
 
 // ---- 기사 미리보기: 원문 주소 → 본문 요약 추출 ----
 const articleCache = new Map();
